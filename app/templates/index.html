@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>Docker Dashboard</title>
+<style>
+  body { font-family: sans-serif; background: #111; color: #eee; margin: 2rem; }
+  h1 { margin-bottom: 1rem; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { padding: 0.6rem; border-bottom: 1px solid #333; text-align: left; }
+  th { color: #999; font-weight: normal; }
+  .status-running { color: #4caf50; }
+  .status-exited { color: #f44336; }
+  .bar { background: #333; border-radius: 4px; overflow: hidden; height: 10px; width: 100px; }
+  .bar-fill { background: #4caf50; height: 100%; }
+  button { background: #2a2a2a; color: #eee; border: 1px solid #444; border-radius: 4px; padding: 0.3rem 0.6rem; cursor: pointer; margin-right: 0.3rem; }
+  button:hover { background: #3a3a3a; }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  .spinner {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border: 2px solid #555;
+    border-top-color: #4caf50;
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    margin-right: 0.4rem;
+    vertical-align: middle;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .pending-text { color: #999; }
+  #log-panel { display: none; margin-top: 1rem; }
+  #log-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.4rem; }
+  #log-title { color: #999; font-size: 0.9rem; }
+  pre#log-view { white-space: pre-wrap; background: #000; padding: 1rem; max-height: 400px; overflow-y: auto; border-radius: 6px; margin: 0; }
+</style>
+</head>
+<body>
+  <h1>🐳 Docker Dashboard</h1>
+  <table>
+    <thead>
+      <tr>
+        <th>Container</th>
+        <th>Image</th>
+        <th>Status</th>
+        <th>CPU</th>
+        <th>Memory</th>
+        <th>관리</th>
+      </tr>
+    </thead>
+    <tbody id="container-list"></tbody>
+  </table>
+
+  <div id="log-panel">
+    <div id="log-header">
+      <span id="log-title"></span>
+      <button onclick="closeLogs()">닫기</button>
+    </div>
+    <pre id="log-view"></pre>
+  </div>
+
+<script>
+let lastData = [];
+const pendingActions = new Set();
+
+function renderTable() {
+  const tbody = document.getElementById('container-list');
+  tbody.innerHTML = '';
+  lastData.forEach(c => {
+    const isPending = pendingActions.has(c.id);
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${c.name}</td>
+      <td>${c.image}</td>
+      <td class="status-${c.status}">
+        ${isPending ? '<span class="spinner"></span><span class="pending-text">처리 중...</span>' : c.status}
+      </td>
+      <td>${c.cpu_percent}%</td>
+      <td>
+        <div class="bar"><div class="bar-fill" style="width:${c.memory.percent}%"></div></div>
+        ${c.memory.usage_mb} / ${c.memory.limit_mb} MB
+      </td>
+      <td>
+        <button onclick="restartContainer('${c.id}', '${c.name}')" ${isPending ? 'disabled' : ''}>Restart</button>
+        ${c.status === 'running' ? `<button onclick="stopContainer('${c.id}', '${c.name}')" ${isPending ? 'disabled' : ''}>중단</button>` : ''}
+        <button onclick="showLogs('${c.id}', '${c.name}')">Logs</button>
+      </td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+async function fetchContainers() {
+  const res = await fetch('/api/containers');
+  lastData = await res.json();
+  renderTable();
+}
+
+async function restartContainer(id, name) {
+  if (!confirm(`컨테이너 ${name}를 재시작할까요?`)) return;
+  pendingActions.add(id);
+  renderTable();
+  try {
+    await fetch(`/api/containers/${id}/restart`, { method: 'POST' });
+  } finally {
+    pendingActions.delete(id);
+  }
+  await fetchContainers();
+}
+
+async function stopContainer(id, name) {
+  if (!confirm(`컨테이너 ${name}를 중단할까요?`)) return;
+  pendingActions.add(id);
+  renderTable();
+  try {
+    await fetch(`/api/containers/${id}/stop`, { method: 'POST' });
+  } finally {
+    pendingActions.delete(id);
+  }
+  await fetchContainers();
+}
+
+let currentLogSource = null;
+
+function stopLogStream() {
+  if (currentLogSource) {
+    currentLogSource.close();
+    currentLogSource = null;
+  }
+}
+
+function closeLogs() {
+  stopLogStream();
+  document.getElementById('log-panel').style.display = 'none';
+}
+
+function showLogs(id, name) {
+  closeLogs();
+
+  const view = document.getElementById('log-view');
+  view.textContent = '';
+  document.getElementById('log-title').textContent = `${name} 실시간 로그`;
+  document.getElementById('log-panel').style.display = 'block';
+
+  currentLogSource = new EventSource(`/api/containers/${id}/logs/stream?tail=100`);
+  currentLogSource.onmessage = (event) => {
+    view.textContent += event.data + '\n';
+    view.scrollTop = view.scrollHeight;
+  };
+  currentLogSource.onerror = () => {
+    view.textContent += '\n[연결 종료]\n';
+    stopLogStream();
+  };
+}
+
+async function pollLoop() {
+  await fetchContainers();
+  setTimeout(pollLoop, 3000);
+}
+pollLoop();
+</script>
+</body>
+</html>
