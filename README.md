@@ -14,7 +14,7 @@ docker-dashboard/
     └── templates/
         └── index.html     # 웹 대시보드 UI (3초 주기 폴링)
 ```
- 
+
 ## 설치 및 실행
 ```bash
 cd docker-dashboard
